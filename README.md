@@ -107,6 +107,35 @@ SoundWallet can serve as:
 - **Demo Application**: Example of mobile AI implementation
 - **Research Platform**: Base for further accessibility research
 
+## 📚 Documentation
+
+- **[📋 Overview](OVERVIEW.md)** - Quick introduction and key features
+- **[🎯 Capabilities](CAPABILITIES.md)** - Detailed capabilities and what SoundWallet can do
+- **[📱 Usage Guide](USAGE.md)** - Installation instructions and how to use the app
+- **[🔧 Developer Guide](DEVELOPER.md)** - Technical documentation for developers
+- **[❓ FAQ](FAQ.md)** - Frequently asked questions and troubleshooting
+
+## 🚀 Getting Started
+
+1. **Download** the app from the releases section
+2. **Install** on Android 7.0+ device
+3. **Grant** camera and audio permissions
+4. **Point** camera at Korean currency
+5. **Tap** screen to capture and analyze
+6. **Listen** to Korean audio feedback
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our documentation for:
+- Bug reports and feature requests
+- Code contributions and improvements
+- Documentation updates
+- Accessibility testing and feedback
+
+## 📄 License
+
+This project is open source and available under the MIT License.
+
 ---
 
 *SoundWallet empowers users to independently identify and count Korean currency through the power of computer vision and audio feedback, making money management more accessible for everyone.*
