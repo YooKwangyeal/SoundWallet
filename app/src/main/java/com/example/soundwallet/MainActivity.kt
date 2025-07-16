@@ -64,7 +64,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         tts = TextToSpeech(this, this)
 
         tfliteGeneral = loadModelFile("best_float16.tflite")!!
-        tfliteCoin = loadModelFile("best2_float16.tflite")!!
+        tfliteCoin = loadModelFile("best_coin_float16.tflite")!!
 
         setContent {
             SoundWalletTheme {
