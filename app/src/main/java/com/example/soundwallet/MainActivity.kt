@@ -6,7 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
+import android.os.Parcel
+import android.os.Parcelable
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -21,8 +24,15 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -30,6 +40,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.soundwallet.ui.theme.SoundWalletTheme
+import kotlinx.coroutines.launch
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -38,7 +49,7 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
 
-class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
+class MainActivity() : ComponentActivity(), TextToSpeech.OnInitListener, Parcelable {
 
     private lateinit var previewView: PreviewView
     private lateinit var tfliteGeneral: Interpreter
@@ -46,16 +57,21 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var tts: TextToSpeech
     private var imageCapture: ImageCapture? = null
 
-    private val selectImageLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val uri = result.data?.data
-            uri?.let {
-                val inputStream = contentResolver.openInputStream(it)
-                val bitmap = BitmapFactory.decodeStream(inputStream)
-                inputStream?.close()
-                bitmap?.let { runInferenceAndSpeak(it) }
+    private val selectImageLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                val uri = result.data?.data
+                uri?.let {
+                    val inputStream = contentResolver.openInputStream(it)
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream?.close()
+                    bitmap?.let { runInferenceAndSpeak(it) }
+                }
             }
         }
+
+    constructor(parcel: Parcel) : this() {
+
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,7 +84,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         setContent {
             SoundWalletTheme {
-                CameraPreviewComposable()
+                MainScreenWithDrawer()
             }
         }
     }
@@ -171,7 +187,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     else -> 0
                 }
                 if (amount > 0) {
-                    results.add(DetectionResult(classId, conf, amount, floatArrayOf(x1, y1, x2, y2)))
+                    results.add(
+                        DetectionResult(
+                            classId,
+                            conf,
+                            amount,
+                            floatArrayOf(x1, y1, x2, y2)
+                        )
+                    )
                 }
             }
         }
@@ -226,21 +249,22 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     fun CameraPreviewComposable() {
         val context = LocalContext.current
 
-        AndroidView(factory = { ctx ->
-            PreviewView(ctx).apply {
-                previewView = this
-                post { startCamera(this) }
-            }
-        },
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { _: Offset ->
-                        takePictureAndRunInference() // ✅ 터치 시 직접 카메라 캡처
-                    }
-                )
-            }
+        AndroidView(
+            factory = { ctx ->
+                PreviewView(ctx).apply {
+                    previewView = this
+                    post { startCamera(this) }
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { _: Offset ->
+                            takePictureAndRunInference() // ✅ 터치 시 직접 카메라 캡처
+                        }
+                    )
+                }
         )
     }
 
@@ -282,7 +306,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             for (j in i + 1 until sorted.size) {
                 if (used[j]) continue
                 val detB = sorted[j]
-                if (detA.classId == detB.classId && calculateIoU(detA.box, detB.box) > iouThreshold) {
+                if (detA.classId == detB.classId && calculateIoU(
+                        detA.box,
+                        detB.box
+                    ) > iouThreshold
+                ) {
                     used[j] = true
                 }
             }
@@ -295,5 +323,100 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         tfliteGeneral?.close()
         tfliteCoin?.close()
         super.onDestroy()
+    }
+
+    override fun writeToParcel(parcel: Parcel, flags: Int) {
+
+    }
+
+    override fun describeContents(): Int {
+        return 0
+    }
+
+    companion object CREATOR : Parcelable.Creator<MainActivity> {
+        override fun createFromParcel(parcel: Parcel): MainActivity {
+            return MainActivity(parcel)
+        }
+
+        override fun newArray(size: Int): Array<MainActivity?> {
+            return arrayOfNulls(size)
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun MainScreenWithDrawer() {
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current // 여기에서 선언
+        var languageExpanded by remember { mutableStateOf(false) }
+        var selectedLanguage by remember { mutableStateOf("한국어") }
+
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            "Settings",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                        Divider()
+                        // 언어 설정 메뉴
+                        Text(
+                            "언어 설정",
+                            modifier = Modifier
+                                .padding(vertical = 8.dp)
+                                .clickable { languageExpanded = !languageExpanded }
+                        )
+                        // 언어 선택 하위 항목
+                        if (languageExpanded) {
+                            Column(modifier = Modifier.padding(start = 16.dp)) {
+                                val languages = listOf("한국어", "영어", "일본어", "중국어")
+                                languages.forEach { lang ->
+                                    Text(
+                                        lang,
+                                        modifier = Modifier
+                                            .padding(vertical = 4.dp)
+                                            .clickable {
+                                                selectedLanguage = lang
+                                                languageExpanded = false
+                                                // 여기서 실제 언어 변경 로직 추가 가능
+                                            },
+                                        color = if (selectedLanguage == lang) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "tts 연결",
+                            modifier = Modifier
+                                .padding(vertical = 8.dp)
+                                .clickable {
+                                    val url = "http://172.30.1.57:8000/common/tts/tts_view/"
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                    context.startActivity(intent) // context 사용
+                                }
+                        )
+                    }
+                }
+            }
+        ) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text("SoundWallet") },
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "메뉴")
+                            }
+                        }
+                    )
+                }
+            ) { innerPadding ->
+                CameraPreviewComposable()
+            }
+        }
     }
 }
