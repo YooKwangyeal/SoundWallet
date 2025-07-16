@@ -41,8 +41,9 @@ import java.util.Locale
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var previewView: PreviewView
+    private lateinit var tfliteGeneral: Interpreter
+    private lateinit var tfliteCoin: Interpreter
     private lateinit var tts: TextToSpeech
-    private var tflite: Interpreter? = null
     private var imageCapture: ImageCapture? = null
 
     private val selectImageLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -61,21 +62,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
 
         tts = TextToSpeech(this, this)
-        tflite = loadModelFile("best_float16.tflite")
 
-        // 입력 shape 확인
-        tflite?.let {
-            val inputShape = it.getInputTensor(0).shape()
-            Log.d("TFLite", "모델 입력 shape: ${inputShape.joinToString()}")
-        }
-
-        if (!allPermissionsGranted()) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.CAMERA),
-                10
-            )
-        }
+        tfliteGeneral = loadModelFile("best_float16.tflite")!!
+        tfliteCoin = loadModelFile("best2_float16.tflite")!!
 
         setContent {
             SoundWalletTheme {
@@ -107,9 +96,40 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun runInferenceAndSpeak(bitmap: Bitmap) {
-        val inputSize = 640
-        val inputBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4)
-        inputBuffer.order(ByteOrder.nativeOrder())
+        val resultsGeneral = runInference(bitmap, tfliteGeneral)
+        val resultsCoin = runInference(bitmap, tfliteCoin)
+
+        // 두 모델 결과 합치고 박스 중복만 제거
+        val allResults = resultsGeneral + resultsCoin
+        val filteredResults = removeDuplicates(allResults)
+
+        Log.d("RESULT", "Model: General → ${resultsGeneral.size}개 감지")
+        Log.d("RESULT", "Model: Coin → ${resultsCoin.size}개 감지")
+        Log.d("RESULT", "Merged → ${filteredResults.size}개 최종 반영")
+
+        if (filteredResults.isNotEmpty()) {
+            val amounts = filteredResults.map { it.amount }
+            val spoken = filteredResults.map { "${it.amount}원" }
+            val total = amounts.sum()
+            val message = "감지된 금액은 ${spoken.joinToString(", ")}이며, 총합은 ${total}원 입니다."
+            tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, null)
+        } else {
+            tts.speak("감지된 금액이 없습니다.", TextToSpeech.QUEUE_FLUSH, null, null)
+        }
+    }
+
+    data class DetectionResult(
+        val classId: Int,
+        val conf: Float,
+        val amount: Int,
+        val box: FloatArray // [x1, y1, x2, y2]
+    )
+
+    private fun runInference(bitmap: Bitmap, interpreter: Interpreter): List<DetectionResult> {
+        val inputSize = 832
+        val inputBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
+            order(ByteOrder.nativeOrder())
+        }
 
         val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
         val pixels = IntArray(inputSize * inputSize)
@@ -125,36 +145,38 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
         inputBuffer.rewind()
 
-        // YOLOv8 TFLite 기본 출력: [1, 100, 6] → x, y, w, h, conf, class_id
         val output = Array(1) { Array(300) { FloatArray(6) } }
-        tflite?.run(inputBuffer, output)
+        interpreter.run(inputBuffer, output)
 
-        val classToAmount = mapOf(
-            0 to "10원",
-            1 to "50원",
-            2 to "100원",
-            3 to "500원",
-            4 to "1000원",
-            5 to "5000원",
-            6 to "10000원",
-            7 to "50000원"
-        )
+        val results = mutableListOf<DetectionResult>()
 
-        val detectedAmounts = mutableSetOf<String>()
         for (i in output[0].indices) {
             val conf = output[0][i][4]
             val classId = output[0][i][5].toInt()
+            val x1 = output[0][i][0]
+            val y1 = output[0][i][1]
+            val x2 = output[0][i][2]
+            val y2 = output[0][i][3]
 
-            if (conf > 0.5f && classId in classToAmount.keys) {
-                classToAmount[classId]?.let { detectedAmounts.add(it) }
+            if (conf > 0.5f) {
+                val amount = when (classId) {
+                    0 -> 10
+                    1 -> 50
+                    2 -> 100
+                    3 -> 500
+                    4 -> 1000
+                    5 -> 5000
+                    6 -> 10000
+                    7 -> 50000
+                    else -> 0
+                }
+                if (amount > 0) {
+                    results.add(DetectionResult(classId, conf, amount, floatArrayOf(x1, y1, x2, y2)))
+                }
             }
         }
 
-        val message = if (detectedAmounts.isNotEmpty())
-            "감지된 금액은 ${detectedAmounts.joinToString(", ")} 입니다."
-        else "감지된 금액이 없습니다."
-
-        tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, null)
+        return results
     }
 
     private fun takePictureAndRunInference() {
@@ -229,9 +251,49 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    private fun calculateIoU(boxA: FloatArray, boxB: FloatArray): Float {
+        val xA = maxOf(boxA[0], boxB[0])
+        val yA = maxOf(boxA[1], boxB[1])
+        val xB = minOf(boxA[2], boxB[2])
+        val yB = minOf(boxA[3], boxB[3])
+
+        val interArea = maxOf(0f, xB - xA) * maxOf(0f, yB - yA)
+        if (interArea <= 0f) return 0f
+
+        val boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        val boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        val unionArea = boxAArea + boxBArea - interArea
+
+        return if (unionArea > 0f) interArea / unionArea else 0f
+    }
+
+    private fun removeDuplicates(
+        detections: List<DetectionResult>,
+        iouThreshold: Float = 0.3f
+    ): List<DetectionResult> {
+        val sorted = detections.sortedByDescending { it.conf }
+        val result = mutableListOf<DetectionResult>()
+        val used = BooleanArray(sorted.size)
+
+        for (i in sorted.indices) {
+            if (used[i]) continue
+            val detA = sorted[i]
+            result.add(detA)
+            for (j in i + 1 until sorted.size) {
+                if (used[j]) continue
+                val detB = sorted[j]
+                if (detA.classId == detB.classId && calculateIoU(detA.box, detB.box) > iouThreshold) {
+                    used[j] = true
+                }
+            }
+        }
+        return result
+    }
+
     override fun onDestroy() {
         tts.shutdown()
-        tflite?.close()
+        tfliteGeneral?.close()
+        tfliteCoin?.close()
         super.onDestroy()
     }
 }
